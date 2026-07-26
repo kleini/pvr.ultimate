@@ -63,8 +63,8 @@ std::string Utils::UrlEncode(const std::string& value) {
   return escaped.str();
 }
 
-std::string Utils::ConvertDrmJsonToLegacy(const rapidjson::Value& drmJson) {
-  if (!drmJson.IsObject()) return "";
+bool Utils::ParseDrmJsonToConfig(const rapidjson::Value& drmJson, DRMConfig& config) {
+  if (!drmJson.IsObject()) return false;
 
   std::string keySystem = "com.widevine.alpha";
   const rapidjson::Value* drmSystem = nullptr;
@@ -90,25 +90,22 @@ std::string Utils::ConvertDrmJsonToLegacy(const rapidjson::Value& drmJson) {
     }
   }
 
-  if (!drmSystem || !drmSystem->IsObject()) return "";
-  if (!drmSystem->HasMember("license") || !(*drmSystem)["license"].IsObject()) return "";
+  if (!drmSystem || !drmSystem->IsObject()) return false;
+  if (!drmSystem->HasMember("license") || !(*drmSystem)["license"].IsObject()) return false;
 
   const rapidjson::Value& license = (*drmSystem)["license"];
 
-  std::string licenseUrl, headers, reqData;
+  config.system = keySystem;
   if (license.HasMember("server_url") && license["server_url"].IsString())
-    licenseUrl = license["server_url"].GetString();
+    config.license.serverUrl = license["server_url"].GetString();
   if (license.HasMember("req_headers") && license["req_headers"].IsString())
-    headers = license["req_headers"].GetString();
+    config.license.reqHeaders = license["req_headers"].GetString();
   if (license.HasMember("req_data") && license["req_data"].IsString())
-    reqData = license["req_data"].GetString();
+    config.license.reqData = license["req_data"].GetString();
+  if (license.HasMember("server_certificate") && license["server_certificate"].IsString())
+    config.license.serverCertificate = license["server_certificate"].GetString();
 
-  std::string result = keySystem;
-  if (!licenseUrl.empty()) result += "|" + licenseUrl;
-  if (!headers.empty())    result += "|" + headers;
-  if (!reqData.empty())    result += "|" + reqData;
-
-  return result;
+  return !config.license.serverUrl.empty();
 }
 
 time_t Utils::ParseISO8601(const std::string& isoString) {

@@ -140,4 +140,6 @@ private:
   // the live channel path and the EPG catchup path so header-parsing logic exists in one place.
   static void ApplyStreamHeaders(std::vector<kodi::addon::PVRStreamProperty>& properties,
                                  const std::string& streamHeadersBase64);
+  void AddLegacyDrmProperties(std::vector<kodi::addon::PVRStreamProperty>& properties,
+                              const DRMConfig& config);
 };

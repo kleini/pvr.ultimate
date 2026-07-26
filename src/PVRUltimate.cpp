@@ -101,7 +101,11 @@ void CPVRUltimate::DetectInputstreamVersion() {
   if (kodi::IsAddonAvailable("inputstream.adaptive", isaVersion, isaEnabled)) {
     int isaMajor = 0;
     std::istringstream(isaVersion) >> isaMajor;
-    m_useModernDrm = (isaMajor >= 20);
+    // The "inputstream.adaptive.drm" JSON property is only parsed by ISA 22+
+    // (Piers); in the whole Omega 21.x series its handler is disabled
+    // ("for future DRM properties rework" in CompKodiProps.cpp), so Kodi 21
+    // must use the classic license_type/license_key properties.
+    m_useModernDrm = (isaMajor >= 22);
     kodi::Log(ADDON_LOG_INFO, "inputstream.adaptive version: %s, enabled: %s, modern DRM: %s",
               isaVersion.c_str(), isaEnabled ? "yes" : "no", m_useModernDrm.load() ? "yes" : "no");
   } else {
@@ -379,11 +383,14 @@ void CPVRUltimate::ApplyDRMProperties(std::vector<kodi::addon::PVRStreamProperty
           rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
           drmDoc.Accept(writer);
           properties.emplace_back("inputstream.adaptive.drm", buffer.GetString());
+          drmConfigured = true;
         } else {
-          std::string legacyDrm = Utils::ConvertDrmJsonToLegacy(drmDoc);
-          if (!legacyDrm.empty()) properties.emplace_back("inputstream.adaptive.drm_legacy", legacyDrm);
+          DRMConfig drmConfig;
+          if (Utils::ParseDrmJsonToConfig(drmDoc, drmConfig)) {
+            AddLegacyDrmProperties(properties, drmConfig);
+            drmConfigured = true;
+          }
         }
-        drmConfigured = true;
       }
     }
   }
@@ -399,14 +406,58 @@ void CPVRUltimate::ApplyDRMProperties(std::vector<kodi::addon::PVRStreamProperty
       }
     } else {
       DRMConfig drmConfig = GetDRMConfig(provider, channelId, isRecording);
-      if (!drmConfig.system.empty() && !drmConfig.license.serverUrl.empty()) {
-        std::string legacy = drmConfig.system + "|" + drmConfig.license.serverUrl;
-        if (!drmConfig.license.reqHeaders.empty()) legacy += "|" + drmConfig.license.reqHeaders;
-        if (!drmConfig.license.reqData.empty()) legacy += "|" + drmConfig.license.reqData;
-        properties.emplace_back("inputstream.adaptive.drm_legacy", legacy);
-      }
+      AddLegacyDrmProperties(properties, drmConfig);
     }
   }
+}
+
+void CPVRUltimate::AddLegacyDrmProperties(std::vector<kodi::addon::PVRStreamProperty>& properties,
+                                          const DRMConfig& config) {
+  if (config.system.empty() || config.license.serverUrl.empty()) return;
+
+  properties.emplace_back("inputstream.adaptive.license_type", config.system);
+
+  // license_key format: <server URL>|<headers>|<POST data>|<response>.
+  // ISA 21 (Omega) ignores the modern "drm" JSON property and rejects a
+  // 4-field "drm_legacy", so this is the only path that can carry req_data.
+  std::string headers = config.license.reqHeaders;
+  if (headers.empty() && config.system == "com.widevine.alpha")
+    headers = "Content-Type=application%2Foctet-stream";
+
+  // The backend sends req_data base64-encoded; "{CHA-RAW}"/"{CHA-B64}" are its
+  // placeholders for the CDM challenge, mapping to ISA's R{SSM}/b{SSM}.
+  std::string postData = "R{SSM}";
+  if (!config.license.reqData.empty()) {
+    std::string decoded = Utils::Base64Decode(config.license.reqData);
+    if (decoded == "{CHA-B64}")
+      postData = "b{SSM}";
+    else if (!decoded.empty() && decoded != "{CHA-RAW}")
+      postData = decoded;
+  }
+
+  std::string lkey = config.license.serverUrl + "|" + headers + "|" + postData + "|";
+
+  // Kodi truncates PVR stream property values at PVR_ADDON_NAME_STRING_LENGTH
+  // (1024), and Magenta2 license URLs carry a ~1.5k JWT. Like pvr.magenta,
+  // split the license string across license_url + license_url_append, which
+  // ISA concatenates back into the license key.
+  constexpr size_t kPropertyCutoff = 1000;
+  // Two properties can carry at most kPropertyCutoff + 1023 chars; beyond
+  // that Kodi truncates the append part silently and the license fails.
+  if (lkey.length() > kPropertyCutoff + 1023)
+    kodi::Log(ADDON_LOG_ERROR,
+              "License key length %zu exceeds the %zu chars two stream properties can carry; "
+              "the license request will likely fail",
+              lkey.length(), kPropertyCutoff + 1023);
+  if (lkey.length() > kPropertyCutoff) {
+    properties.emplace_back("inputstream.adaptive.license_url", lkey.substr(0, kPropertyCutoff));
+    properties.emplace_back("inputstream.adaptive.license_url_append", lkey.substr(kPropertyCutoff));
+  } else {
+    properties.emplace_back("inputstream.adaptive.license_key", lkey);
+  }
+
+  if (!config.license.serverCertificate.empty())
+    properties.emplace_back("inputstream.adaptive.server_certificate", config.license.serverCertificate);
 }
 
 // ============================================================================
