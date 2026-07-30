@@ -13,6 +13,9 @@ struct UltimateProvider {
 
 struct UltimateChannel {
   std::string uniqueId;
+  // Unique id reported to Kodi. Derived from provider and channel id, because
+  // the display channel number is not unique across stations.
+  int kodiUniqueId = 0;
   int channelNumber = 0;
   std::string channelName;
   std::string iconPath;

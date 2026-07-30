@@ -684,7 +684,7 @@ PVR_ERROR CPVRUltimate::GetChannelGroupMembers(
     if (channel.isRadio == isRadioGroup) {
       kodi::addon::PVRChannelGroupMember member;
       member.SetGroupName(groupName);
-      member.SetChannelUniqueId(channel.channelNumber);
+      member.SetChannelUniqueId(channel.kodiUniqueId);
       member.SetChannelNumber(channel.channelNumber);
       results.Add(member);
     }

@@ -163,10 +163,20 @@ std::string Utils::ToISO8601(time_t time) {
   return std::string(buffer);
 }
 
-int Utils::GenerateProviderUniqueId(const std::string& providerName) {
+int Utils::Djb2Hash(const std::string& value) {
   unsigned int hash = 5381;
-  for (char c : providerName) {
+  for (char c : value) {
     hash = ((hash << 5) + hash) + static_cast<unsigned int>(c);
   }
   return static_cast<int>(hash & 0x7FFFFFFF);
+}
+
+int Utils::GenerateProviderUniqueId(const std::string& providerName) {
+  return Djb2Hash(providerName);
+}
+
+int Utils::GenerateChannelUniqueId(const std::string& provider, const std::string& channelId) {
+  const int id = Djb2Hash(provider + ":" + channelId);
+  // Kodi treats 0 as no unique id, so never hand it out.
+  return id != 0 ? id : 1;
 }

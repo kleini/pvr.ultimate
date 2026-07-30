@@ -1,5 +1,7 @@
 #include "ChannelManager.h"
 
+#include "Utils.h"
+
 // Standard library includes
 #include <vector>
 #include <string>
@@ -88,6 +90,7 @@ void ChannelManager::LoadChannelsForProvider(const std::string& provider, int pr
     }
 
     channel.uniqueId = provider + ":" + channel.channelId;
+    channel.kodiUniqueId = Utils::GenerateChannelUniqueId(provider, channel.channelId);
     channel.mode = (channelJson.HasMember("Mode") && channelJson["Mode"].IsString())
                    ? channelJson["Mode"].GetString() : "live";
     channel.sessionManifest = (channelJson.HasMember("SessionManifest") && channelJson["SessionManifest"].IsBool())
@@ -121,7 +124,7 @@ void ChannelManager::LoadChannelsForProvider(const std::string& provider, int pr
     lookupInfo.catchupHours = (channelJson.HasMember("CatchupHours") && channelJson["CatchupHours"].IsInt())
                               ? channelJson["CatchupHours"].GetInt() : 0;
 
-    outLookup[channel.channelNumber] = lookupInfo;
+    outLookup[channel.kodiUniqueId] = lookupInfo;
     outChannels.push_back(channel);
   }
 }
@@ -136,7 +139,7 @@ bool ChannelManager::GetChannels(bool radio, kodi::addon::PVRChannelsResultSet& 
   for (const auto& channel : m_channels) {
     if (channel.isRadio == radio) {
       kodi::addon::PVRChannel kodiChannel;
-      kodiChannel.SetUniqueId(channel.channelNumber);
+      kodiChannel.SetUniqueId(channel.kodiUniqueId);
       kodiChannel.SetIsRadio(channel.isRadio);
       kodiChannel.SetChannelNumber(channel.channelNumber);
       kodiChannel.SetChannelName(channel.channelName);
@@ -160,7 +163,7 @@ bool ChannelManager::GetChannelInfo(int channelUid, std::string& provider, std::
 bool ChannelManager::GetChannelByUid(int channelUid, UltimateChannel& channel) const {
   std::shared_lock<std::shared_mutex> lock(m_dataMutex);
   for (const auto& ch : m_channels) {
-    if (ch.channelNumber == channelUid) {
+    if (ch.kodiUniqueId == channelUid) {
       channel = ch;
       return true;
     }
