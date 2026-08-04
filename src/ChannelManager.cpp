@@ -41,7 +41,7 @@ bool ChannelManager::LoadChannels(const std::vector<UltimateProvider>& providers
   m_channelLookup = std::move(newLookup);
   m_channelIndex.clear();
   for (size_t i = 0; i < m_channels.size(); ++i) {
-    m_channelIndex[m_channels[i].channelNumber] = i;
+    m_channelIndex[m_channels[i].kodiUniqueId] = i;
   }
 
   return !m_channels.empty();
@@ -111,6 +111,9 @@ void ChannelManager::LoadChannelsForProvider(const std::string& provider, int pr
     }
 
     channel.uniqueId = provider + ":" + channel.channelId;
+    // Display channel numbers are not unique (providers list e.g. an SD and an
+    // HD station on the same number), so derive Kodi's unique id from the id.
+    channel.kodiUniqueId = Utils::GenerateProviderUniqueId(channel.uniqueId);
     channel.mode = (channelJson.contains("Mode") && channelJson["Mode"].is_string())
                    ? channelJson["Mode"].get<std::string>() : "live";
     channel.sessionManifest = (channelJson.contains("SessionManifest") && channelJson["SessionManifest"].is_boolean())
@@ -150,7 +153,7 @@ void ChannelManager::LoadChannelsForProvider(const std::string& provider, int pr
     lookupInfo.catchupHours = (channelJson.contains("CatchupHours") && channelJson["CatchupHours"].is_number_integer())
                               ? channelJson["CatchupHours"].get<int>() : 0;
 
-    outLookup[channel.channelNumber] = lookupInfo;
+    outLookup[channel.kodiUniqueId] = lookupInfo;
     outChannels.push_back(channel);
   }
 }
@@ -165,7 +168,7 @@ bool ChannelManager::GetChannels(bool radio, kodi::addon::PVRChannelsResultSet& 
   for (const auto& channel : m_channels) {
     if (channel.isRadio == radio) {
       kodi::addon::PVRChannel kodiChannel;
-      kodiChannel.SetUniqueId(channel.channelNumber);
+      kodiChannel.SetUniqueId(channel.kodiUniqueId);
       kodiChannel.SetIsRadio(channel.isRadio);
       kodiChannel.SetChannelNumber(channel.channelNumber);
       kodiChannel.SetChannelName(channel.channelName);
