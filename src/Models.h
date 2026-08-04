@@ -13,6 +13,7 @@ struct UltimateProvider {
 
 struct UltimateChannel {
   std::string uniqueId;
+  int kodiUniqueId = 0;  // stable, collision-free id reported to Kodi
   int channelNumber = 0;
   std::string channelName;
   std::string iconPath;
