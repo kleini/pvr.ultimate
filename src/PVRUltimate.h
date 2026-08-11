@@ -117,6 +117,9 @@ private:
   void InitializeAsync();
   void EnsureInitThreadStopped();
   bool IsReady() const { return m_initialized.load() && m_backendAvailable.load(); }
+  // Block a Kodi request until the background load finished, so accessors
+  // never have to answer with an empty result set. Returns false on timeout.
+  bool WaitForReady();
 
   // Managers
   std::unique_ptr<ProviderManager> m_providerManager;
