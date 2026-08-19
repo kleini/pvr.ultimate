@@ -831,7 +831,12 @@ PVR_ERROR CPVRUltimate::GetChannelGroupMembers(
 
 PVR_ERROR CPVRUltimate::GetEPGForChannel(int channelUid, time_t start, time_t end,
                                          kodi::addon::PVREPGTagsResultSet& results) {
-  if (!IsReady()) return PVR_ERROR_NO_ERROR;
+  // Kodi imports the guide channel by channel right after connecting, i.e.
+  // while the background load may still be running. Answering "no error, no
+  // programmes" makes it store that empty range for the channel and move on,
+  // which shows up as scattered channels without titles or descriptions until
+  // the next EPG update. Wait for the data like the other accessors do.
+  if (!WaitForReady()) return PVR_ERROR_SERVER_ERROR;
 
   auto httpGet = [this](const std::string& endpoint) -> std::string {
     return this->HttpGet(this->BuildApiUrl(endpoint));
@@ -1029,7 +1034,7 @@ PVR_ERROR CPVRUltimate::GetRecordingEdl(const kodi::addon::PVRRecording& recordi
 // ============================================================================
 
 PVR_ERROR CPVRUltimate::GetTimerTypes(std::vector<kodi::addon::PVRTimerType>& types) {
-  if (!IsReady()) return PVR_ERROR_NO_ERROR;
+  if (!WaitForReady()) return PVR_ERROR_SERVER_ERROR;
   m_timerManager->GetTimerTypes(types);
   return PVR_ERROR_NO_ERROR;
 }
