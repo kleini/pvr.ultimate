@@ -155,6 +155,20 @@ void CPVRUltimate::InitializeAsync() {
   }
 }
 
+bool CPVRUltimate::WaitForReady() {
+  if (IsReady()) return true;
+
+  // Kodi queries providers, channels, recordings and timers as soon as the
+  // client is created, which is while InitializeAsync() may still be loading.
+  // Wait for that load to finish rather than reporting an empty result set:
+  // Kodi only keeps stored channels (and their per-channel settings such as
+  // hidden flags) for clients whose request failed, see
+  // CPVRChannelGroup::HasValidDataForClient.
+  std::unique_lock<std::mutex> lock(m_initMutex);
+  m_initCv.wait_for(lock, std::chrono::seconds(15), [this]() { return !m_initRunning.load(); });
+  return IsReady();
+}
+
 void CPVRUltimate::DetectInputstreamVersion() {
   m_useModernDrm = false;
 
@@ -602,13 +616,13 @@ PVR_ERROR CPVRUltimate::OnSystemWake() {
 // ============================================================================
 
 PVR_ERROR CPVRUltimate::GetProvidersAmount(int& amount) {
-  if (!IsReady()) { amount = 0; return PVR_ERROR_NO_ERROR; }
+  if (!WaitForReady()) return PVR_ERROR_SERVER_ERROR;
   amount = m_providerManager->GetProvidersAmount();
   return PVR_ERROR_NO_ERROR;
 }
 
 PVR_ERROR CPVRUltimate::GetProviders(kodi::addon::PVRProvidersResultSet& results) {
-  if (!IsReady()) return PVR_ERROR_NO_ERROR;
+  if (!WaitForReady()) return PVR_ERROR_SERVER_ERROR;
   m_providerManager->GetProviders(results);
   return PVR_ERROR_NO_ERROR;
 }
@@ -618,13 +632,13 @@ PVR_ERROR CPVRUltimate::GetProviders(kodi::addon::PVRProvidersResultSet& results
 // ============================================================================
 
 PVR_ERROR CPVRUltimate::GetChannelsAmount(int& amount) {
-  if (!IsReady()) { amount = 0; return PVR_ERROR_NO_ERROR; }
+  if (!WaitForReady()) return PVR_ERROR_SERVER_ERROR;
   amount = m_channelManager->GetChannelsAmount();
   return PVR_ERROR_NO_ERROR;
 }
 
 PVR_ERROR CPVRUltimate::GetChannels(bool radio, kodi::addon::PVRChannelsResultSet& results) {
-  if (!IsReady()) return PVR_ERROR_NO_ERROR;
+  if (!WaitForReady()) return PVR_ERROR_SERVER_ERROR;
   m_channelManager->GetChannels(radio, results);
   return PVR_ERROR_NO_ERROR;
 }
@@ -752,6 +766,7 @@ PVR_ERROR CPVRUltimate::GetChannelGroups(bool radio, kodi::addon::PVRChannelGrou
 PVR_ERROR CPVRUltimate::GetChannelGroupMembers(
     const kodi::addon::PVRChannelGroup& group,
     kodi::addon::PVRChannelGroupMembersResultSet& results) {
+  if (!WaitForReady()) return PVR_ERROR_SERVER_ERROR;
 
   bool isRadioGroup = group.GetIsRadio();
   std::string groupName = group.GetGroupName();
@@ -776,7 +791,12 @@ PVR_ERROR CPVRUltimate::GetChannelGroupMembers(
 
 PVR_ERROR CPVRUltimate::GetEPGForChannel(int channelUid, time_t start, time_t end,
                                          kodi::addon::PVREPGTagsResultSet& results) {
-  if (!IsReady()) return PVR_ERROR_NO_ERROR;
+  // Kodi imports the guide channel by channel right after connecting, i.e.
+  // while the background load may still be running. Answering "no error, no
+  // programmes" makes it store that empty range for the channel and move on,
+  // which shows up as scattered channels without titles or descriptions until
+  // the next EPG update. Wait for the data like the other accessors do.
+  if (!WaitForReady()) return PVR_ERROR_SERVER_ERROR;
 
   auto httpGet = [this](const std::string& endpoint) -> std::string {
     return this->HttpGet(this->BuildApiUrl(endpoint));
@@ -885,13 +905,13 @@ PVR_ERROR CPVRUltimate::GetEPGTagStreamProperties(
 // ============================================================================
 
 PVR_ERROR CPVRUltimate::GetRecordingsAmount(bool deleted, int& amount) {
-  if (!IsReady()) { amount = 0; return PVR_ERROR_NO_ERROR; }
+  if (!WaitForReady()) return PVR_ERROR_SERVER_ERROR;
   amount = m_recordingManager->GetRecordingsAmount(deleted);
   return PVR_ERROR_NO_ERROR;
 }
 
 PVR_ERROR CPVRUltimate::GetRecordings(bool deleted, kodi::addon::PVRRecordingsResultSet& results) {
-  if (!IsReady()) return PVR_ERROR_NO_ERROR;
+  if (!WaitForReady()) return PVR_ERROR_SERVER_ERROR;
   m_recordingManager->GetRecordings(deleted, results);
   return PVR_ERROR_NO_ERROR;
 }
@@ -974,19 +994,19 @@ PVR_ERROR CPVRUltimate::GetRecordingEdl(const kodi::addon::PVRRecording& recordi
 // ============================================================================
 
 PVR_ERROR CPVRUltimate::GetTimerTypes(std::vector<kodi::addon::PVRTimerType>& types) {
-  if (!IsReady()) return PVR_ERROR_NO_ERROR;
+  if (!WaitForReady()) return PVR_ERROR_SERVER_ERROR;
   m_timerManager->GetTimerTypes(types);
   return PVR_ERROR_NO_ERROR;
 }
 
 PVR_ERROR CPVRUltimate::GetTimersAmount(int& amount) {
-  if (!IsReady()) { amount = 0; return PVR_ERROR_NO_ERROR; }
+  if (!WaitForReady()) return PVR_ERROR_SERVER_ERROR;
   amount = m_timerManager->GetTimersAmount();
   return PVR_ERROR_NO_ERROR;
 }
 
 PVR_ERROR CPVRUltimate::GetTimers(kodi::addon::PVRTimersResultSet& results) {
-  if (!IsReady()) return PVR_ERROR_NO_ERROR;
+  if (!WaitForReady()) return PVR_ERROR_SERVER_ERROR;
   m_timerManager->GetTimers(results);
   return PVR_ERROR_NO_ERROR;
 }
