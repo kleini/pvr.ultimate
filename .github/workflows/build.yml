@@ -19,6 +19,8 @@ jobs:
           # Kodi 20 Nexus (Stable Release)
           - os: ubuntu-latest
             kodi-branch: 20.2-Nexus
+          - os: ubuntu-24.04-arm
+            kodi-branch: 20.2-Nexus
           - os: macos-latest
             kodi-branch: 20.2-Nexus
           - os: windows-2022
@@ -27,18 +29,22 @@ jobs:
           # Kodi 21 Omega (Stable Release)
           - os: ubuntu-latest
             kodi-branch: 21.3-Omega
+          - os: ubuntu-24.04-arm
+            kodi-branch: 21.3-Omega
           - os: macos-latest
             kodi-branch: 21.3-Omega
           - os: windows-2022
             kodi-branch: 21.3-Omega
 
-          # Kodi 22 Piers (Beta Tag)
+          # Kodi 22 Piers (RC Tag)
           - os: ubuntu-latest
-            kodi-branch: 22.0b1-Piers
+            kodi-branch: 22.0rc1-Piers
+          - os: ubuntu-24.04-arm
+            kodi-branch: 22.0rc1-Piers
           - os: macos-latest
-            kodi-branch: 22.0b1-Piers
+            kodi-branch: 22.0rc1-Piers
           - os: windows-2022
-            kodi-branch: 22.0b1-Piers
+            kodi-branch: 22.0rc1-Piers
 
     steps:
       - name: Checkout Kodi Repository
@@ -150,7 +156,7 @@ jobs:
           echo "Packaging ${{ env.app_id }} version $ADDON_VERSION"
 
           mkdir -p "${{ env.app_id }}/build/zips"
-          ZIP_PATH="${{ github.workspace }}/${{ env.app_id }}/build/zips/${{ env.app_id }}-${ADDON_VERSION}-${{ runner.os }}-${{ matrix.kodi-branch }}.zip"
+          ZIP_PATH="${{ github.workspace }}/${{ env.app_id }}/build/zips/${{ env.app_id }}-${ADDON_VERSION}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.kodi-branch }}.zip"
 
           cd "${{ github.workspace }}/kodi-install"
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -162,5 +168,5 @@ jobs:
       - name: Upload Zip Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pvr.ultimate-${{ runner.os }}-${{ matrix.kodi-branch }}
+          name: pvr.ultimate-${{ runner.os }}-${{ runner.arch }}-${{ matrix.kodi-branch }}
           path: ${{ env.app_id }}/build/zips/*.zip

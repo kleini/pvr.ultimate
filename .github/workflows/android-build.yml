@@ -27,12 +27,12 @@ jobs:
             abi: arm64-v8a
             ndk-version: r26b
 
-          # Piers (v22 Beta 1 Tag)
-          - kodi-branch: 22.0b1-Piers
+          # Piers (v22 RC1 Tag)
+          - kodi-branch: 22.0rc1-Piers
             host: arm-linux-androideabi
             abi: armeabi-v7a
             ndk-version: r26b
-          - kodi-branch: 22.0b1-Piers
+          - kodi-branch: 22.0rc1-Piers
             host: aarch64-linux-android
             abi: arm64-v8a
             ndk-version: r26b
@@ -50,10 +50,14 @@ jobs:
         with:
           path: ${{ env.app_id }}
 
+      # Host tools only. nlohmann-json and the flatbuffers *runtime* are
+      # cross-installed into the depends prefix below (host packages are
+      # invisible to find_package under the NDK toolchain file). flatc is a
+      # host tool and comes from apt.
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y rapidjson-dev flatbuffers-compiler libflatbuffers-dev \
+          sudo apt-get install -y flatbuffers-compiler \
             autoconf automake libtool pkg-config curl zip gettext \
             libcurl4-openssl-dev libssl-dev ccache ninja-build cmake unzip
 
@@ -92,12 +96,14 @@ jobs:
           echo "${{ env.app_id }} ${{ github.workspace }}/${{ env.app_id }}" \
             > "${{ github.workspace }}/xbmc/cmake/addons/addons/${{ env.app_id }}/${{ env.app_id }}.txt"
 
+      # "-v2": bumped because the cached prefix now also contains nlohmann_json
+      # and flatbuffers. An old cache hit would skip the install steps below.
       - name: Cache Kodi Built Dependencies
         id: cache-depends
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/kodi-deps
-          key: kodi-deps-${{ matrix.kodi-branch }}-${{ matrix.abi }}-${{ matrix.ndk-version }}-${{ hashFiles('xbmc/tools/depends/Makefile*') }}
+          key: kodi-deps-v2-${{ matrix.kodi-branch }}-${{ matrix.abi }}-${{ matrix.ndk-version }}-${{ hashFiles('xbmc/tools/depends/Makefile*') }}
 
       - name: Configure Kodi depends
         if: steps.cache-depends.outputs.cache-hit != 'true'
@@ -116,16 +122,9 @@ jobs:
             --with-sdk-path="${{ env.ANDROID_HOME }}" \
             --prefix="${{ github.workspace }}/kodi-deps" \
             --disable-debug
-      # "Build Kodi depends" step removed — Toolchain_binaddons.cmake is written by
+      # "Build Kodi depends" step removed - Toolchain_binaddons.cmake is written by
       # config.status during ./configure, not by `make`. Building the full depends
       # tree pulls in fontconfig/ffmpeg/gnutls/etc. that pvr.ultimate doesn't need.
-
-      #      - name: Build Kodi depends
-      #        if: steps.cache-depends.outputs.cache-hit != 'true'
-      #        shell: bash
-      #        run: |
-      #          cd "${{ github.workspace }}/xbmc/tools/depends"
-      #          make -j$(nproc)
 
       - name: Locate toolchain file
         id: toolchain
@@ -137,6 +136,43 @@ jobs:
             echo "Toolchain file not found under kodi-deps"; exit 1
           fi
           echo "path=$TOOLCHAIN_FILE" >> "$GITHUB_OUTPUT"
+          # Depends prefix = parent of the toolchain file's directory
+          # (<prefix>/share/Toolchain_binaddons.cmake). The next step prints
+          # CMAKE_FIND_ROOT_PATH so you can verify this assumption in the log.
+          echo "prefix=$(dirname "$(dirname "$TOOLCHAIN_FILE")")" >> "$GITHUB_OUTPUT"
+          grep -n "FIND_ROOT_PATH\|CMAKE_PREFIX_PATH" "$TOOLCHAIN_FILE" || true
+
+      - name: Install nlohmann_json + flatbuffers into depends prefix
+        if: steps.cache-depends.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -ex
+          PREFIX="${{ steps.toolchain.outputs.prefix }}"
+          TOOLCHAIN="${{ steps.toolchain.outputs.path }}"
+
+          # nlohmann_json is header-only: a host-side install of the headers and
+          # the CMake config files into the target prefix is sufficient.
+          curl -fsSL https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.tar.gz | tar xz
+          cmake -S json-3.11.3 -B json-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DJSON_BuildTests=OFF \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX"
+          cmake --install json-build
+
+          # flatbuffers runtime: cross-built for the target. Version is pinned to
+          # the host flatc so generated code and runtime headers match.
+          FB_VER=$(flatc --version | awk '{print $3}')
+          curl -fsSL "https://github.com/google/flatbuffers/archive/refs/tags/v${FB_VER}.tar.gz" | tar xz
+          cmake -S "flatbuffers-${FB_VER}" -B fb-build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFLATBUFFERS_BUILD_FLATC=OFF \
+            -DFLATBUFFERS_BUILD_TESTS=OFF \
+            -DFLATBUFFERS_BUILD_FLATHASH=OFF \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX"
+          cmake --build fb-build
+          cmake --install fb-build
 
       - name: Configure CMake
         shell: bash
@@ -151,7 +187,8 @@ jobs:
             -DADDONS_DEFINITION_DIR="${{ github.workspace }}/xbmc/cmake/addons/addons" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/kodi-install" \
-            -DPACKAGE_ZIP=ON
+            -DPACKAGE_ZIP=ON \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
       - name: Build Add-on
         run: cmake --build "${{ env.app_id }}/build" --parallel $(nproc)
@@ -162,14 +199,14 @@ jobs:
         run: |
           ADDON_XML="${{ github.workspace }}/kodi-install/${{ env.app_id }}/addon.xml"
           [ -f "$ADDON_XML" ] || { echo "missing addon.xml"; find "${{ github.workspace }}/kodi-install" -maxdepth 3; exit 1; }
-          
+
           ADDON_VERSION=$(python3 -c "
           import xml.etree.ElementTree as ET
           print(ET.parse('$ADDON_XML').getroot().attrib['version'])")
-          
+
           mkdir -p "${{ env.app_id }}/build/zips"
           ZIP_PATH="${{ github.workspace }}/${{ env.app_id }}/build/zips/${{ env.app_id }}-${ADDON_VERSION}-android-${{ matrix.kodi-branch }}-${{ matrix.abi }}.zip"
-          
+
           cd "${{ github.workspace }}/kodi-install"
           zip -r "$ZIP_PATH" "${{ env.app_id }}"
 
