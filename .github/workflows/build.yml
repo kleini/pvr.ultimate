@@ -115,8 +115,11 @@ jobs:
           set(CMAKE_SYSTEM_PROCESSOR arm)
           set(CMAKE_C_COMPILER arm-linux-gnueabihf-gcc)
           set(CMAKE_CXX_COMPILER arm-linux-gnueabihf-g++)
-          set(CMAKE_PREFIX_PATH $DEPS)
-          set(CMAKE_FIND_ROOT_PATH $DEPS)
+          # list(APPEND ...), not set(): Kodi's addon build passes its own
+          # CMAKE_PREFIX_PATH (where KodiConfig.cmake lives) via -D, and a plain
+          # set() here would shadow it.
+          list(APPEND CMAKE_PREFIX_PATH $DEPS)
+          list(APPEND CMAKE_FIND_ROOT_PATH $DEPS)
           EOF
 
           # nlohmann_json: header-only, installed into the target prefix.
