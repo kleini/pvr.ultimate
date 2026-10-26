@@ -21,6 +21,11 @@ jobs:
             kodi-branch: 20.2-Nexus
           - os: ubuntu-24.04-arm
             kodi-branch: 20.2-Nexus
+          # 32-bit ARM (CoreELEC & co), cross-compiled on a 22.04 host so the
+          # sysroot's glibc floor stays low (2.35)
+          - os: ubuntu-22.04
+            target: ARM
+            kodi-branch: 20.2-Nexus
           - os: macos-latest
             kodi-branch: 20.2-Nexus
           - os: windows-2022
@@ -31,6 +36,11 @@ jobs:
             kodi-branch: 21.3-Omega
           - os: ubuntu-24.04-arm
             kodi-branch: 21.3-Omega
+          # 32-bit ARM (CoreELEC & co), cross-compiled on a 22.04 host so the
+          # sysroot's glibc floor stays low (2.35)
+          - os: ubuntu-22.04
+            target: ARM
+            kodi-branch: 21.3-Omega
           - os: macos-latest
             kodi-branch: 21.3-Omega
           - os: windows-2022
@@ -40,6 +50,11 @@ jobs:
           - os: ubuntu-latest
             kodi-branch: 22.0rc1-Piers
           - os: ubuntu-24.04-arm
+            kodi-branch: 22.0rc1-Piers
+          # 32-bit ARM (CoreELEC & co), cross-compiled on a 22.04 host so the
+          # sysroot's glibc floor stays low (2.35)
+          - os: ubuntu-22.04
+            target: ARM
             kodi-branch: 22.0rc1-Piers
           - os: macos-latest
             kodi-branch: 22.0rc1-Piers
@@ -65,7 +80,7 @@ jobs:
       # successfully in this pipeline, which CMakeLists.txt's
       # find_package(nlohmann_json REQUIRED) now expects to find.
       - name: Install dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.target != 'ARM'
         run: |
           sudo apt-get update
           sudo apt-get install -y nlohmann-json3-dev flatbuffers-compiler libflatbuffers-dev
@@ -82,6 +97,55 @@ jobs:
           vcpkg install nlohmann-json flatbuffers --triplet x64-windows
           echo "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\tools\flatbuffers" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      - name: Build cross dependencies (Linux armhf)
+        if: matrix.target == 'ARM'
+        shell: bash
+        run: |
+          set -ex
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf ninja-build
+
+          DEPS="${{ github.workspace }}/arm-deps"
+          HOST_TOOLS="${{ github.workspace }}/host-tools"
+          FB_VER=23.5.26
+          NJ_VER=3.11.3
+
+          cat > "${{ github.workspace }}/arm-toolchain.cmake" <<EOF
+          set(CMAKE_SYSTEM_NAME Linux)
+          set(CMAKE_SYSTEM_PROCESSOR arm)
+          set(CMAKE_C_COMPILER arm-linux-gnueabihf-gcc)
+          set(CMAKE_CXX_COMPILER arm-linux-gnueabihf-g++)
+          set(CMAKE_PREFIX_PATH $DEPS)
+          set(CMAKE_FIND_ROOT_PATH $DEPS)
+          EOF
+
+          # nlohmann_json: header-only, installed into the target prefix.
+          curl -fsSL "https://github.com/nlohmann/json/archive/refs/tags/v${NJ_VER}.tar.gz" | tar xz
+          cmake -S "json-${NJ_VER}" -B json-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DJSON_BuildTests=OFF \
+            -DCMAKE_INSTALL_PREFIX="$DEPS"
+          cmake --install json-build
+
+          # flatbuffers: pinned to one version for both the host flatc and the
+          # target runtime so generated code and headers always match.
+          curl -fsSL "https://github.com/google/flatbuffers/archive/refs/tags/v${FB_VER}.tar.gz" | tar xz
+          cmake -S "flatbuffers-${FB_VER}" -B fb-host -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DFLATBUFFERS_BUILD_TESTS=OFF \
+            -DFLATBUFFERS_BUILD_FLATC=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_INSTALL_PREFIX="$HOST_TOOLS"
+          cmake --build fb-host
+          cmake --install fb-host
+          echo "$HOST_TOOLS/bin" >> "$GITHUB_PATH"
+
+          cmake -S "flatbuffers-${FB_VER}" -B fb-arm -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/arm-toolchain.cmake" \
+            -DCMAKE_BUILD_TYPE=Release -DFLATBUFFERS_BUILD_FLATC=OFF \
+            -DFLATBUFFERS_BUILD_TESTS=OFF -DFLATBUFFERS_BUILD_FLATHASH=OFF \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_INSTALL_PREFIX="$DEPS"
+          cmake --build fb-arm
+          cmake --install fb-arm
+
       - name: Prepare Add-on Definition
         run: |
           mkdir -p "${{ github.workspace }}/xbmc/cmake/addons/addons/${{ env.app_id }}"
@@ -95,7 +159,7 @@ jobs:
           arch: x64
 
       - name: Configure CMake (Linux/macOS)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && matrix.target != 'ARM'
         run: |
           cmake \
             -S "${{ github.workspace }}/xbmc/cmake/addons" \
@@ -108,6 +172,23 @@ jobs:
             -DPACKAGE_ZIP=ON \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5
         shell: bash
+
+      - name: Configure CMake (Linux armhf cross)
+        if: matrix.target == 'ARM'
+        shell: bash
+        run: |
+          cmake \
+            -S "${{ github.workspace }}/xbmc/cmake/addons" \
+            -B "${{ env.app_id }}/build" \
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/arm-toolchain.cmake" \
+            -DCORE_SYSTEM_NAME=linux \
+            -DADDONS_TO_BUILD=${{ env.app_id }} \
+            -DADDON_SRC_PREFIX="${{ github.workspace }}" \
+            -DADDONS_DEFINITION_DIR="${{ github.workspace }}/xbmc/cmake/addons/addons" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/kodi-install" \
+            -DPACKAGE_ZIP=ON \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
       - name: Configure CMake (Windows)
         if: runner.os == 'Windows'
@@ -129,6 +210,24 @@ jobs:
         run: |
           cmake --build "${{ env.app_id }}/build" --parallel
         shell: bash
+
+      - name: Verify library architecture (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          LIB=$(find "${{ github.workspace }}/kodi-install/${{ env.app_id }}" -maxdepth 1 -type f -name '*.so*' | head -n1)
+          [ -n "$LIB" ] || { echo "no .so found"; exit 1; }
+          file "$LIB"
+          MACHINE=$(readelf -h "$LIB" | awk -F: '/Machine/{gsub(/^ +/,"",$2); print $2}')
+          case "${{ matrix.target || runner.arch }}" in
+            X64)   WANT="X86-64" ;;
+            ARM64) WANT="AArch64" ;;
+            ARM)   WANT="ARM" ;;
+          esac
+          echo "ELF machine: $MACHINE (expected: $WANT)"
+          echo "$MACHINE" | grep -q "$WANT" || { echo "Architecture mismatch"; exit 1; }
+          echo "Highest glibc symbol version required:"
+          readelf --dyn-syms -W "$LIB" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -n1
 
       - name: Package Add-on
         shell: bash
@@ -156,7 +255,18 @@ jobs:
           echo "Packaging ${{ env.app_id }} version $ADDON_VERSION"
 
           mkdir -p "${{ env.app_id }}/build/zips"
-          ZIP_PATH="${{ github.workspace }}/${{ env.app_id }}/build/zips/${{ env.app_id }}-${ADDON_VERSION}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.kodi-branch }}.zip"
+          ZIP_PATH="${{ github.workspace }}/${{ env.app_id }}/build/zips/${{ env.app_id }}-${ADDON_VERSION}-${{ runner.os }}-${{ matrix.target || runner.arch }}-${{ matrix.kodi-branch }}.zip"
+
+          # CMake installs the library plus versioned copies/symlinks, and zip
+          # follows symlinks, so the same .so would be shipped three times.
+          # Kodi only loads the file named in library_linux.
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            ( cd "${{ github.workspace }}/kodi-install/${{ env.app_id }}"
+              LIB=$(grep -o 'library_linux="[^"]*"' addon.xml | cut -d'"' -f2)
+              for f in ${{ env.app_id }}.so*; do
+                [ "$f" != "$LIB" ] && rm -f "$f"
+              done )
+          fi
 
           cd "${{ github.workspace }}/kodi-install"
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -168,5 +278,5 @@ jobs:
       - name: Upload Zip Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pvr.ultimate-${{ runner.os }}-${{ runner.arch }}-${{ matrix.kodi-branch }}
+          name: pvr.ultimate-${{ runner.os }}-${{ matrix.target || runner.arch }}-${{ matrix.kodi-branch }}
           path: ${{ env.app_id }}/build/zips/*.zip
