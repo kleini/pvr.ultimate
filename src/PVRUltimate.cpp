@@ -73,6 +73,10 @@ void CPVRUltimate::InitializeAsync() {
   m_initRunning = true;
   kodi::Log(ADDON_LOG_INFO, "Background initialization started...");
 
+  // NEW: providers that delivered no usable channel answer this round;
+  // retried at the end of this function (never drops channels).
+  std::vector<std::string> failedChannelProviders;
+
   try {
     if (RetryBackendCall("initialization")) {
       if (m_stopInit.load()) {
@@ -95,10 +99,17 @@ void CPVRUltimate::InitializeAsync() {
         kodi::Log(ADDON_LOG_ERROR, "Failed to load providers");
       }
 
+      // NEW: right after a backend restart some providers are still loading
+      // their channel lists (state "warming"). Kodi's initial PVR import runs
+      // concurrently with this thread, so wait a bounded time for the lists
+      // to be complete before loading channels.
+      if (m_stopInit.load()) { m_initRunning = false; m_initCv.notify_all(); return; }
+      WaitForBackendWarmup(httpGet, parseJson, 60000);
+
       const auto& providers = m_providerManager->GetProviders();
 
       if (m_stopInit.load()) { m_initRunning = false; m_initCv.notify_all(); return; }
-      if (!m_channelManager->LoadChannels(providers, httpGet, parseJson)) {
+      if (!m_channelManager->LoadChannels(providers, httpGet, parseJson, &failedChannelProviders)) {
         kodi::Log(ADDON_LOG_ERROR, "Failed to load channels");
       }
 
@@ -152,6 +163,67 @@ void CPVRUltimate::InitializeAsync() {
     TriggerProvidersUpdate();
     TriggerRecordingUpdate();
     TriggerTimerUpdate();
+  }
+
+  // NEW: some providers gave no channels (auth not ready, upstream outage,
+  // still warming). Retry them with growing delays; the retry loop never
+  // drops a channel (LoadChannels keeps old entries for failed providers).
+  if (!m_stopInit.load() && !failedChannelProviders.empty()) {
+    RetryIncompleteChannels(failedChannelProviders);
+  }
+}
+
+bool CPVRUltimate::SleepInterruptible(int ms) {
+  for (int waited = 0; waited < ms; waited += 200) {
+    if (m_stopInit.load()) return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  }
+  return !m_stopInit.load();
+}
+
+void CPVRUltimate::WaitForBackendWarmup(const std::function<std::string(const std::string&)>& httpGet,
+                                        const std::function<bool(const std::string&, nlohmann::json&)>& parseJson,
+                                        int timeoutMs) {
+  const int stepMs = 2000;
+  for (int waited = 0; waited < timeoutMs; waited += stepMs) {
+    bool warming = false;
+    for (const auto& p : m_providerManager->GetProviders()) {
+      if (p.enabled && p.channelState == "warming") { warming = true; break; }
+    }
+    if (!warming) return;
+    kodi::Log(ADDON_LOG_INFO, "Backend is still loading channel lists, waiting...");
+    if (!SleepInterruptible(stepMs)) return;
+    if (!m_providerManager->LoadProviders(httpGet, parseJson)) return;
+  }
+}
+
+void CPVRUltimate::RetryIncompleteChannels(std::vector<std::string> failed) {
+  static const int kDelaysSec[] = {30, 60, 120, 300, 600};
+
+  auto httpGet = [this](const std::string& endpoint) -> std::string {
+    return this->HttpGet(this->BuildApiUrl(endpoint));
+  };
+  auto parseJson = [](const std::string& response, nlohmann::json& doc) -> bool {
+    return Utils::ParseJsonResponse(response, doc);
+  };
+
+  for (int delaySec : kDelaysSec) {
+    if (failed.empty()) return;
+    kodi::Log(ADDON_LOG_INFO, "%d provider(s) without channels, retrying in %d s", static_cast<int>(failed.size()), delaySec);
+    if (!SleepInterruptible(delaySec * 1000)) return;
+    if (!m_providerManager->LoadProviders(httpGet, parseJson)) continue;
+    WaitForBackendWarmup(httpGet, parseJson, 30000);
+
+    const auto& providers = m_providerManager->GetProviders();
+    const int before = m_channelManager->GetChannelsAmount();
+    std::vector<std::string> stillFailed;
+    m_channelManager->LoadChannels(providers, httpGet, parseJson, &stillFailed);
+    failed = std::move(stillFailed);
+
+    if (m_channelManager->GetChannelsAmount() != before) {
+      TriggerChannelUpdate();
+      TriggerChannelGroupsUpdate();
+    }
   }
 }
 

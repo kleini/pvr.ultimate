@@ -144,6 +144,15 @@ private:
   bool RetryBackendCall(const std::string& operationName);
 
   static void SleepMs(int milliseconds);
+  // NEW: sleep in 200 ms steps, returns false if a stop was requested.
+  bool SleepInterruptible(int ms);
+  // NEW: bounded wait while any enabled provider is in state "warming".
+  void WaitForBackendWarmup(const std::function<std::string(const std::string&)>& httpGet,
+                            const std::function<bool(const std::string&, nlohmann::json&)>& parseJson,
+                            int timeoutMs);
+  // NEW: retries failed providers with growing delays; never drops channels.
+  void RetryIncompleteChannels(std::vector<std::string> failed);
+
   void DetectInputstreamVersion();
   void DetectBackendCapabilities();
   std::string BuildApiUrl(const std::string& endpoint);

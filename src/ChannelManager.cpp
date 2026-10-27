@@ -18,9 +18,11 @@
 
 bool ChannelManager::LoadChannels(const std::vector<UltimateProvider>& providers,
                                   const std::function<std::string(const std::string&)>& httpGet,
-                                  const std::function<bool(const std::string&, nlohmann::json&)>& parseJson) {
+                                  const std::function<bool(const std::string&, nlohmann::json&)>& parseJson,
+                                  std::vector<std::string>* failedProviders) {
   std::vector<UltimateChannel> newChannels;
   std::map<int, ChannelLookupInfo> newLookup;
+  std::vector<std::string> failed;
 
   // Use each provider's position in the (name-sorted, see ProviderManager)
   // providers vector as its channel-number offset index, rather than a
@@ -31,12 +33,27 @@ bool ChannelManager::LoadChannels(const std::vector<UltimateProvider>& providers
   for (size_t providerIndex = 0; providerIndex < providers.size(); ++providerIndex) {
     const auto& provider = providers[providerIndex];
     if (provider.enabled) {
-      LoadChannelsForProvider(provider.name, provider.uniqueId, static_cast<int>(providerIndex),
-                              httpGet, parseJson, newChannels, newLookup);
+      if (!LoadChannelsForProvider(provider.name, provider.uniqueId, static_cast<int>(providerIndex),
+                                   httpGet, parseJson, newChannels, newLookup)) {
+        failed.push_back(provider.name);
+      }
     }
   }
 
   std::unique_lock<std::shared_mutex> lock(m_dataMutex);
+
+  // NEW: a provider that gave no usable answer THIS time keeps the channels it
+  // had before (a reload must never make channels vanish). On the very first
+  // load there is nothing to keep.
+  if (!failed.empty()) {
+    for (const auto& oldChannel : m_channels) {
+      if (std::find(failed.begin(), failed.end(), oldChannel.provider) == failed.end()) continue;
+      newChannels.push_back(oldChannel);
+      auto it = m_channelLookup.find(oldChannel.channelNumber);
+      if (it != m_channelLookup.end()) newLookup[oldChannel.channelNumber] = it->second;
+    }
+  }
+
   m_channels = std::move(newChannels);
   m_channelLookup = std::move(newLookup);
   m_channelIndex.clear();
@@ -44,10 +61,11 @@ bool ChannelManager::LoadChannels(const std::vector<UltimateProvider>& providers
     m_channelIndex[m_channels[i].channelNumber] = i;
   }
 
+  if (failedProviders) *failedProviders = std::move(failed);  // NEW
   return !m_channels.empty();
 }
 
-void ChannelManager::LoadChannelsForProvider(const std::string& provider, int providerUniqueId, int providerIndex,
+bool ChannelManager::LoadChannelsForProvider(const std::string& provider, int providerUniqueId, int providerIndex,
                                              const std::function<std::string(const std::string&)>& httpGet,
                                              const std::function<bool(const std::string&, nlohmann::json&)>& parseJson,
                                              std::vector<UltimateChannel>& outChannels,
@@ -56,17 +74,17 @@ void ChannelManager::LoadChannelsForProvider(const std::string& provider, int pr
   std::string response = httpGet(url);
   if (response.empty()) {
     kodi::Log(ADDON_LOG_WARNING, "Empty response from %s", Utils::RedactUrl(url).c_str());
-    return;
+    return false;  // CHANGED
   }
 
   nlohmann::json document;
   if (!parseJson(response, document)) {
     kodi::Log(ADDON_LOG_ERROR, "Failed to parse channels response from %s", provider.c_str());
-    return;
+    return false;  // CHANGED
   }
   if (!document.contains("channels") || !document["channels"].is_array()) {
     kodi::Log(ADDON_LOG_ERROR, "Missing channels array in response from %s", provider.c_str());
-    return;
+    return false;  // CHANGED
   }
 
   // Store reference to avoid repeated map lookups / for readability
@@ -153,6 +171,7 @@ void ChannelManager::LoadChannelsForProvider(const std::string& provider, int pr
     outLookup[channel.channelNumber] = lookupInfo;
     outChannels.push_back(channel);
   }
+  return true;  // CHANGED
 }
 
 int ChannelManager::GetChannelsAmount() const {

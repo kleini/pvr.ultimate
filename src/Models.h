@@ -9,6 +9,8 @@ struct UltimateProvider {
   std::string logo;
   bool enabled = true;
   int uniqueId = 0;
+  // idle | warming | ready | error (only present for enabled providers)
+  std::string channelState;
 };
 
 struct UltimateChannel {

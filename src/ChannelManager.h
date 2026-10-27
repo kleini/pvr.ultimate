@@ -18,7 +18,8 @@ public:
 
     bool LoadChannels(const std::vector<UltimateProvider>& providers,
                       const std::function<std::string(const std::string&)>& httpGet,
-                      const std::function<bool(const std::string&, nlohmann::json&)>& parseJson);
+                      const std::function<bool(const std::string&, nlohmann::json&)>& parseJson,
+                      std::vector<std::string>* failedProviders = nullptr);
 
     int GetChannelsAmount() const;
     bool GetChannels(bool radio, kodi::addon::PVRChannelsResultSet& results) const;
@@ -34,7 +35,7 @@ public:
     void UnlockUnique() const { m_dataMutex.unlock(); }
 
 private:
-    static void LoadChannelsForProvider(const std::string& provider, int providerUniqueId, int providerIndex,
+    static bool LoadChannelsForProvider(const std::string& provider, int providerUniqueId, int providerIndex,
                                         const std::function<std::string(const std::string&)>& httpGet,
                                         const std::function<bool(const std::string&, nlohmann::json&)>& parseJson,
                                         std::vector<UltimateChannel>& outChannels,
