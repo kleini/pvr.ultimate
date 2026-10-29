@@ -312,3 +312,42 @@ int Utils::SafeStoi(const std::string& str, int defaultValue) {
     return defaultValue;
   }
 }
+
+void Utils::ApplyManifestTypeProperties(std::vector<kodi::addon::PVRStreamProperty>& properties,
+                                        const std::string& streamUrl,
+                                        const std::string& formatHint) {
+  auto lower = [](std::string v) {
+    std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return v;
+  };
+
+  std::string path = streamUrl;
+  const size_t cut = path.find_first_of("?#|");
+  if (cut != std::string::npos) path.erase(cut);
+  path = lower(path);
+
+  std::string kind;
+  if (path.find(".m3u8") != std::string::npos) kind = "hls";
+  else if (path.find(".mpd") != std::string::npos) kind = "mpd";
+  else if (path.find(".ism") != std::string::npos) kind = "ism";
+
+  if (kind.empty()) {
+    const std::string hint = lower(formatHint);
+    if (hint.find("hls") != std::string::npos || hint.find("m3u8") != std::string::npos) kind = "hls";
+    else if (hint.find("dash") != std::string::npos || hint == "mpd") kind = "mpd";
+    else if (hint == "ism" || hint.find("smooth") != std::string::npos) kind = "ism";
+  }
+  if (kind.empty()) return;
+
+  // Intentional: if the caller (or another helper) already set a mimetype/manifest type,
+  // that wins - never override an explicit choice.
+  for (const auto& p : properties) {
+    if (p.GetName() == PVR_STREAM_PROPERTY_MIMETYPE || p.GetName() == "inputstream.adaptive.manifest_type") return;
+  }
+
+  const char* mime = kind == "hls" ? "application/vnd.apple.mpegurl"
+                   : kind == "mpd" ? "application/dash+xml"
+                                   : "application/vnd.ms-sstr+xml";
+  properties.emplace_back(PVR_STREAM_PROPERTY_MIMETYPE, mime);
+  properties.emplace_back("inputstream.adaptive.manifest_type", kind);
+}

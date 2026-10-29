@@ -1,5 +1,6 @@
 #include "PVRUltimate.h"
 #include "Utils.h"
+#include "ProviderSelectDialog.h"
 #include <kodi/General.h>
 #include <kodi/AddonBase.h>
 #include <kodi/Filesystem.h>
@@ -24,12 +25,23 @@ CPVRUltimate::CPVRUltimate()
 
   // Initialize managers
   m_providerManager = std::make_unique<ProviderManager>();
+  {
+    const std::string userDir = kodi::addon::GetUserPath();
+    if (!kodi::vfs::DirectoryExists(userDir)) kodi::vfs::CreateDirectory(userDir);
+    m_providerManager->LoadLocalSelection(kodi::addon::GetUserPath("provider_selection.json"));
+  }
   m_channelManager = std::make_unique<ChannelManager>();
   m_epgManager = std::make_unique<EPGManager>();
   m_recordingManager = std::make_unique<RecordingManager>();
   m_timerManager = std::make_unique<TimerManager>();
 
   DetectInputstreamVersion();
+
+  // 30900 = "Select providers..." (strings.po). SETTING hooks show up as an action
+  // button in the addon settings dialog; the CHANNEL hook is a fallback entry in the
+  // channel context menu for Kodi versions without settings hooks.
+  AddMenuHook(kodi::addon::PVRMenuhook(1, 30900, PVR_MENUHOOK_SETTING));
+  AddMenuHook(kodi::addon::PVRMenuhook(2, 30900, PVR_MENUHOOK_CHANNEL));
 
   {
     std::lock_guard<std::mutex> lock(m_configMutex);
@@ -232,7 +244,9 @@ void CPVRUltimate::DetectInputstreamVersion() {
 
   std::string isaVersion;
   bool isaEnabled = false;
+  m_isaAvailable = false;
   if (kodi::IsAddonAvailable("inputstream.adaptive", isaVersion, isaEnabled)) {
+    m_isaAvailable = isaEnabled;
     int isaMajor = 0;
     std::istringstream(isaVersion) >> isaMajor;
     m_useModernDrm = (isaMajor >= 20);
@@ -446,6 +460,10 @@ std::string CPVRUltimate::HttpGet(const std::string& url) {
   return response;
 }
 
+std::string CPVRUltimate::HttpGetNoRetry(const std::string& url) {
+  return HttpSendRequest(url, "GET", "");
+}
+
 bool CPVRUltimate::HttpDelete(const std::string& url) {
   std::string resp = HttpSendRequest(url, "DELETE", "");
   if (resp.empty()) {
@@ -501,7 +519,7 @@ DRMConfig CPVRUltimate::GetDRMConfig(const std::string& provider, const std::str
                                      bool isRecording) {
   DRMConfig config;
   std::string entityPath = isRecording ? "/recordings/" : "/channels/";
-  std::string response = HttpGet(BuildApiUrl("/api/providers/" + Utils::UrlPathEncode(provider) + entityPath + Utils::UrlPathEncode(channelId) + "/drm"));
+  std::string response = HttpGetNoRetry(BuildApiUrl("/api/providers/" + Utils::UrlPathEncode(provider) + entityPath + Utils::UrlPathEncode(channelId) + "/drm"));
   if (response.empty()) return config;
 
   nlohmann::json document;
@@ -552,7 +570,7 @@ nlohmann::json CPVRUltimate::GetDRMConfigJson(const std::string& provider, const
                                               bool isRecording) {
   nlohmann::json drmConfigs = nlohmann::json::object();
   std::string entityPath = isRecording ? "/recordings/" : "/channels/";
-  std::string response = HttpGet(BuildApiUrl("/api/providers/" + Utils::UrlPathEncode(provider) + entityPath + Utils::UrlPathEncode(channelId) + "/drm"));
+  std::string response = HttpGetNoRetry(BuildApiUrl("/api/providers/" + Utils::UrlPathEncode(provider) + entityPath + Utils::UrlPathEncode(channelId) + "/drm"));
   if (response.empty()) return drmConfigs;
 
   nlohmann::json document;
@@ -578,6 +596,9 @@ void CPVRUltimate::ApplyDRMProperties(std::vector<kodi::addon::PVRStreamProperty
     if (!decodedDrm.empty()) {
       nlohmann::json drmDoc;
       if (Utils::ParseJsonResponse(decodedDrm, drmDoc) && drmDoc.is_object()) {
+        // The backend signals a clear stream with {"none": {...}}. That is not a DRM
+        // system ISA knows - don't hand it over, and don't do a /drm lookup either.
+        if (drmDoc.size() == 1 && drmDoc.contains("none")) return;
         if (m_useModernDrm.load()) {
           properties.emplace_back("inputstream.adaptive.drm", drmDoc.dump());
         } else {
@@ -721,6 +742,16 @@ PVR_ERROR CPVRUltimate::GetChannelStreamProperties(
     return PVR_ERROR_SERVER_ERROR;
   }
 
+  if (!m_isaAvailable.load()) {
+    // The user may have installed/enabled it since startup - re-check before giving up.
+    DetectInputstreamVersion();
+    if (!m_isaAvailable.load()) {
+      kodi::Log(ADDON_LOG_ERROR, "inputstream.adaptive is missing or disabled - HLS/DASH playback impossible");
+      kodi::QueueNotification(QUEUE_ERROR, "PVR Ultimate", kodi::addon::GetLocalizedString(30920, "inputstream.adaptive is missing or disabled"));
+      return PVR_ERROR_FAILED;
+    }
+  }
+
   if (!m_channelManager->GetChannelByUid(channel.GetUniqueId(), ultimateChannel)) {
     return PVR_ERROR_SERVER_ERROR;
   }
@@ -754,6 +785,10 @@ PVR_ERROR CPVRUltimate::GetChannelStreamProperties(
 
   properties.emplace_back(PVR_STREAM_PROPERTY_INPUTSTREAM, "inputstream.adaptive");
   properties.emplace_back(PVR_STREAM_PROPERTY_STREAMURL, manifestUrl);
+  std::string formatHint = ultimateChannel.streamingFormat;
+  if (document.contains("stream_format") && document["stream_format"].is_string())
+    formatHint = document["stream_format"].get<std::string>();  // authoritative: comes with the manifest
+  Utils::ApplyManifestTypeProperties(properties, manifestUrl, formatHint);
 
   ApplyDRMProperties(properties, provider, channelId, useCdm, drmConfigsBase64);
   ApplyStreamHeaders(properties, streamHeadersBase64);
@@ -1152,3 +1187,132 @@ PVR_ERROR CPVRUltimate::GetSignalStatus(int channelUid, kodi::addon::PVRSignalSt
 }
 
 ADDONCREATOR(CPVRUltimate)
+
+// ============================================================================
+// Provider selection dialog (client-side sub-selection, backend untouched)
+// ============================================================================
+
+PVR_ERROR CPVRUltimate::CallSettingsMenuHook(const kodi::addon::PVRMenuhook& menuhook) {
+  if (menuhook.GetHookId() == 1) ShowProviderSelection();
+  return PVR_ERROR_NO_ERROR;
+}
+
+PVR_ERROR CPVRUltimate::CallChannelMenuHook(const kodi::addon::PVRMenuhook& menuhook,
+                                            const kodi::addon::PVRChannel& /*item*/) {
+  if (menuhook.GetHookId() == 2) ShowProviderSelection();
+  return PVR_ERROR_NO_ERROR;
+}
+
+void CPVRUltimate::ShowProviderSelection() {
+  if (!IsReady()) {
+    kodi::QueueNotification(QUEUE_WARNING, "PVR Ultimate",
+                            kodi::addon::GetLocalizedString(30915, "Backend not ready yet"));
+    return;
+  }
+  if (m_providerDialogOpen.exchange(true)) return;  // already open
+  struct Reset { std::atomic<bool>& f; ~Reset() { f = false; } } reset{m_providerDialogOpen};
+
+  auto httpGet = [this](const std::string& endpoint) -> std::string {
+    return this->HttpGet(this->BuildApiUrl(endpoint));
+  };
+  auto parseJson = [](const std::string& response, nlohmann::json& doc) -> bool {
+    return Utils::ParseJsonResponse(response, doc);
+  };
+  // Fresh list from the backend so new/removed providers and states are current.
+  if (!m_providerManager->LoadProviders(httpGet, parseJson)) {
+    kodi::QueueNotification(QUEUE_WARNING, "PVR Ultimate",
+                            kodi::addon::GetLocalizedString(30921, "Could not load providers from the backend"));
+    return;
+  }
+  const std::vector<UltimateProvider> providers = m_providerManager->GetProvidersCopy();
+  const std::set<std::string> oldDisabled = m_providerManager->GetLocallyDisabled();
+
+  // Only what the backend offers is selectable.
+  std::vector<CProviderSelectDialog::Entry> entries;
+  for (const auto& p : providers) {
+    if (!p.backendEnabled) continue;
+    CProviderSelectDialog::Entry e;
+    e.name = p.name;
+    e.label = p.label.empty() ? p.name : p.label;
+    e.country = p.country;
+    e.logo = p.logo;
+    e.state = p.channelState;
+    e.enabled = p.enabled;
+    entries.push_back(std::move(e));
+  }
+  if (entries.empty()) {
+    kodi::QueueNotification(QUEUE_INFO, "PVR Ultimate",
+                            kodi::addon::GetLocalizedString(30922, "No providers available"));
+    return;
+  }
+
+  CProviderSelectDialog dialog(std::move(entries));
+  if (!dialog.Run()) return;
+
+  // Providers shown in the dialog take the user's choice; anything not shown
+  // (currently off on the backend) keeps its previous local state.
+  std::set<std::string> newDisabled = oldDisabled;
+  for (const auto& [name, enabled] : dialog.Result()) {
+    if (enabled) newDisabled.erase(name);
+    else newDisabled.insert(name);
+  }
+  if (newDisabled == oldDisabled) {
+    kodi::QueueNotification(QUEUE_INFO, "PVR Ultimate", kodi::addon::GetLocalizedString(30918, "No changes"));
+    return;
+  }
+
+  if (!m_providerManager->SetLocallyDisabled(newDisabled)) {
+    kodi::QueueNotification(QUEUE_WARNING, "PVR Ultimate",
+                            kodi::addon::GetLocalizedString(30917, "Selection could not be saved permanently"));
+  }
+  kodi::QueueNotification(QUEUE_INFO, "PVR Ultimate", kodi::addon::GetLocalizedString(30916, "Providers updated"));
+  ReloadAfterProviderChange();
+}
+
+void CPVRUltimate::ReloadAfterProviderChange() {
+  // Make sure no background retry loop is still iterating providers while we swap them.
+  EnsureInitThreadStopped();
+  if (m_initThread.joinable()) m_initThread.join();
+  m_stopInit = false;
+
+  auto httpGet = [this](const std::string& endpoint) -> std::string {
+    return this->HttpGet(this->BuildApiUrl(endpoint));
+  };
+  auto parseJson = [](const std::string& response, nlohmann::json& doc) -> bool {
+    return Utils::ParseJsonResponse(response, doc);
+  };
+
+  // Re-applies the local selection on top of the backend's provider list.
+  if (!m_providerManager->LoadProviders(httpGet, parseJson)) {
+    kodi::Log(ADDON_LOG_ERROR, "Provider reload failed after selection change");
+    return;
+  }
+  // Newly selected providers may still be warming up their channel lists. Shorter than
+  // the startup wait (60s) because the user just confirmed a dialog; providers that are
+  // still not ready afterwards are handed to the retry loop below, which fills them in
+  // in the background.
+  WaitForBackendWarmup(httpGet, parseJson, 30000);
+
+  const std::vector<UltimateProvider> providers = m_providerManager->GetProvidersCopy();
+  std::vector<std::string> failedChannels;
+  m_channelManager->LoadChannels(providers, httpGet, parseJson, &failedChannels);
+  m_recordingManager->LoadRecordings(providers, httpGet, parseJson);
+  m_timerManager->LoadTimers(providers, httpGet, parseJson);
+
+  TriggerProvidersUpdate();
+  TriggerChannelUpdate();
+  TriggerChannelGroupsUpdate();
+  TriggerRecordingUpdate();
+  TriggerTimerUpdate();
+
+  // Providers without usable channels yet: hand them to the usual retry loop.
+  if (!failedChannels.empty()) {
+    m_initThread = std::thread([this, failedChannels]() mutable {
+      m_stopInit = false;
+      m_initRunning = true;
+      RetryIncompleteChannels(std::move(failedChannels));
+      m_initRunning = false;
+      m_initCv.notify_all();
+    });
+  }
+}

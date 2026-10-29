@@ -241,6 +241,10 @@ bool RecordingManager::GetRecordingStreamProperties(const std::string& recording
 
   properties.emplace_back(PVR_STREAM_PROPERTY_INPUTSTREAM, "inputstream.adaptive");
   properties.emplace_back(PVR_STREAM_PROPERTY_STREAMURL, streamUrl);
+  std::string formatHint;  // optional: only present if the backend sends it for recordings
+  if (document.contains("stream_format") && document["stream_format"].is_string())
+    formatHint = document["stream_format"].get<std::string>();
+  Utils::ApplyManifestTypeProperties(properties, streamUrl, formatHint);
 
   // DRM properties need to be applied by caller
   // This will be handled by PVRUltimate::ApplyDRMProperties

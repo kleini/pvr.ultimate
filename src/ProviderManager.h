@@ -4,6 +4,7 @@
 #include <kodi/addon-instance/PVR.h>
 #include <vector>
 #include <map>
+#include <set>
 #include <shared_mutex>
 #include <mutex>
 #include <functional>
@@ -21,6 +22,18 @@ public:
 
     std::string GetProviderName(int uniqueId) const;
     const std::vector<UltimateProvider>& GetProviders() const { return m_providers; }
+    // Thread-safe snapshot (copy taken under the lock) for UI / reload code.
+    std::vector<UltimateProvider> GetProvidersCopy() const;
+
+    // --- Local (client-side) provider selection -------------------------------
+    // Purely a sub-selection of what the backend offers; the backend is never
+    // touched. Stored as the set of providers the user DESELECTED, so providers
+    // that newly appear on the backend are active by default.
+    void LoadLocalSelection(const std::string& filePath);
+    std::set<std::string> GetLocallyDisabled() const;
+    // Stores and persists the selection; returns false if the file could not be written.
+    // Takes effect on the next LoadProviders().
+    bool SetLocallyDisabled(const std::set<std::string>& disabled);
 
     void LockShared() const { m_dataMutex.lock_shared(); }
     void UnlockShared() const { m_dataMutex.unlock_shared(); }
@@ -31,4 +44,6 @@ private:
     std::vector<UltimateProvider> m_providers;
     std::map<std::string, int> m_providerIdMap;
     mutable std::shared_mutex m_dataMutex;
+    std::set<std::string> m_locallyDisabled;
+    std::string m_selectionPath;
 };

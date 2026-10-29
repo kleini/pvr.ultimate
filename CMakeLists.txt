@@ -80,6 +80,7 @@ set(ULTIMATE_SOURCES
         src/EPGManager.cpp
         src/RecordingManager.cpp
         src/TimerManager.cpp
+        src/ProviderSelectDialog.cpp
 )
 
 # All header files
@@ -92,6 +93,7 @@ set(ULTIMATE_HEADERS
         src/EPGManager.h
         src/RecordingManager.h
         src/TimerManager.h
+        src/ProviderSelectDialog.h
 )
 
 addon_version(pvr.ultimate ULTIMATE)

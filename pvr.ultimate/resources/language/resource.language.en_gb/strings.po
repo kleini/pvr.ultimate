@@ -91,3 +91,81 @@ msgstr ""
 msgctxt "#30065"
 msgid "EPG Settings"
 msgstr ""
+
+# Provider selection dialog
+
+msgctxt "#30900"
+msgid "Select providers..."
+msgstr ""
+
+msgctxt "#30901"
+msgid "Select all"
+msgstr ""
+
+msgctxt "#30902"
+msgid "Deselect all"
+msgstr ""
+
+msgctxt "#30903"
+msgid "Apply"
+msgstr ""
+
+msgctxt "#30904"
+msgid "Cancel"
+msgstr ""
+
+msgctxt "#30906"
+msgid "active"
+msgstr ""
+
+msgctxt "#30910"
+msgid "Ready"
+msgstr ""
+
+msgctxt "#30911"
+msgid "Loading channels..."
+msgstr ""
+
+msgctxt "#30912"
+msgid "Error"
+msgstr ""
+
+msgctxt "#30913"
+msgid "On"
+msgstr ""
+
+msgctxt "#30914"
+msgid "Off"
+msgstr ""
+
+msgctxt "#30915"
+msgid "Backend not ready yet"
+msgstr ""
+
+msgctxt "#30916"
+msgid "Providers updated"
+msgstr ""
+
+msgctxt "#30917"
+msgid "Selection could not be saved permanently"
+msgstr ""
+
+msgctxt "#30918"
+msgid "No changes"
+msgstr ""
+
+msgctxt "#30919"
+msgid "Select providers"
+msgstr ""
+
+msgctxt "#30920"
+msgid "inputstream.adaptive is missing or disabled"
+msgstr ""
+
+msgctxt "#30921"
+msgid "Could not load providers from the backend"
+msgstr ""
+
+msgctxt "#30922"
+msgid "No providers available"
+msgstr ""

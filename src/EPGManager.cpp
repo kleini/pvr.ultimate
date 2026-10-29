@@ -365,6 +365,7 @@ bool EPGManager::GetEPGTagStreamProperties(const kodi::addon::PVREPGTag& tag,
 
   properties.emplace_back(PVR_STREAM_PROPERTY_INPUTSTREAM, "inputstream.adaptive");
   properties.emplace_back(PVR_STREAM_PROPERTY_STREAMURL, streamUrl);
+  Utils::ApplyManifestTypeProperties(properties, streamUrl, channel.streamingFormat);
   properties.emplace_back("inputstream.adaptive.play_timeshift_buffer", "false");
 
   // DRM (drmConfigsBase64) and stream headers (streamHeadersBase64) are applied by the caller

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <string>
+#include <vector>
+#include <kodi/addon-instance/PVR.h>
 #include <nlohmann/json.hpp>
 
 class Utils {
@@ -29,4 +31,13 @@ public:
 
     // Safe integer parsing from string (no exceptions).
     static int SafeStoi(const std::string& str, int defaultValue = 0);
+
+    // Tells inputstream.adaptive what kind of manifest it gets (HLS / DASH / Smooth).
+    // The kind is derived from the URL path first (.m3u8 / .mpd / .ism) and falls
+    // back to the backend's "StreamingFormat" hint. Without this, backend proxy URLs
+    // that carry no file extension rely on ISA content sniffing. Does nothing if
+    // the kind cannot be determined or a property was already set by the caller.
+    static void ApplyManifestTypeProperties(std::vector<kodi::addon::PVRStreamProperty>& properties,
+                                            const std::string& streamUrl,
+                                            const std::string& formatHint);
 };

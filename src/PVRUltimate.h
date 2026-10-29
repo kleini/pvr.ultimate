@@ -79,6 +79,12 @@ public:
 
   PVR_ERROR OnSystemWake() override;
 
+  // Provider selection dialog (opened from the addon settings and, as a fallback
+  // for Kodi versions that do not list settings hooks, from the channel context menu).
+  PVR_ERROR CallSettingsMenuHook(const kodi::addon::PVRMenuhook& menuhook) override;
+  PVR_ERROR CallChannelMenuHook(const kodi::addon::PVRMenuhook& menuhook,
+                                const kodi::addon::PVRChannel& item) override;
+
 private:
   // Configuration
   std::string m_backendUrl;
@@ -94,6 +100,8 @@ private:
   std::atomic<int> m_retryDelayMs;
   std::atomic<bool> m_supportsPiggyback;
   std::atomic<bool> m_useModernDrm;
+  std::atomic<bool> m_isaAvailable{true};   // inputstream.adaptive installed AND enabled
+  std::atomic<bool> m_providerDialogOpen{false};
 
   // EPG service settings (database EPG service, optional alternative to backend API)
   // m_epgServiceUrl is guarded by m_configMutex, same as m_backendUrl.
@@ -154,6 +162,14 @@ private:
   void RetryIncompleteChannels(std::vector<std::string> failed);
 
   void DetectInputstreamVersion();
+
+  // Provider selection (client-side only; the backend is never modified)
+  void ShowProviderSelection();
+  void ReloadAfterProviderChange();
+
+  // Single attempt, no retry/backoff. For optional lookups where a 404 is a valid
+  // answer (e.g. /drm of a clear stream) - HttpGet would burn maxRetries*retryDelay on it.
+  std::string HttpGetNoRetry(const std::string& url);
   void DetectBackendCapabilities();
   std::string BuildApiUrl(const std::string& endpoint);
 

@@ -1,6 +1,8 @@
 #include "ProviderManager.h"
 #include "Utils.h"
 #include <algorithm>
+#include <kodi/Filesystem.h>
+#include <kodi/General.h>
 
 bool ProviderManager::LoadProviders(const std::function<std::string(const std::string&)>& httpGet,
                                     const std::function<bool(const std::string&, nlohmann::json&)>& parseJson) {
@@ -28,7 +30,8 @@ bool ProviderManager::LoadProviders(const std::function<std::string(const std::s
       p.label = (provider.contains("label") && provider["label"].is_string()) ? provider["label"].get<std::string>() : p.name;
       p.country = (provider.contains("country") && provider["country"].is_string()) ? provider["country"].get<std::string>() : "";
       p.logo = (provider.contains("logo") && provider["logo"].is_string()) ? provider["logo"].get<std::string>() : "";
-      p.enabled = (provider.contains("enabled") && provider["enabled"].is_boolean()) ? provider["enabled"].get<bool>() : true;
+      p.backendEnabled = (provider.contains("enabled") && provider["enabled"].is_boolean()) ? provider["enabled"].get<bool>() : true;
+      p.enabled = p.backendEnabled;  // local deselection is applied below
       // NEW: idle | warming | ready | error (only present for enabled providers)
       if (provider.contains("channel_state") && provider["channel_state"].is_object() &&
           provider["channel_state"].contains("state") && provider["channel_state"]["state"].is_string()) {
@@ -55,6 +58,9 @@ bool ProviderManager::LoadProviders(const std::function<std::string(const std::s
             });
 
   std::unique_lock<std::shared_mutex> lock(m_dataMutex);
+  for (auto& p : newProviders) {
+    if (m_locallyDisabled.count(p.name)) p.enabled = false;
+  }
   m_providers = std::move(newProviders);
   m_providerIdMap = std::move(newProviderIdMap);
 
@@ -77,6 +83,11 @@ bool ProviderManager::GetProviders(kodi::addon::PVRProvidersResultSet& results) 
   return true;
 }
 
+std::vector<UltimateProvider> ProviderManager::GetProvidersCopy() const {
+  std::shared_lock<std::shared_mutex> lock(m_dataMutex);
+  return m_providers;
+}
+
 int ProviderManager::GetProvidersAmount() const {
   std::shared_lock<std::shared_mutex> lock(m_dataMutex);
   return std::ranges::count_if(m_providers,
@@ -89,4 +100,73 @@ std::string ProviderManager::GetProviderName(int uniqueId) const {
     if (provider.uniqueId == uniqueId) return provider.name;
   }
   return "";
+}
+
+void ProviderManager::LoadLocalSelection(const std::string& filePath) {
+  std::unique_lock<std::shared_mutex> lock(m_dataMutex);
+  m_selectionPath = filePath;
+  m_locallyDisabled.clear();
+
+  if (!kodi::vfs::FileExists(filePath)) return;
+  kodi::vfs::CFile file;
+  if (!file.OpenFile(filePath)) return;
+
+  std::string content;
+  char buf[2048];
+  ssize_t n;
+  while ((n = file.Read(buf, sizeof(buf))) > 0) content.append(buf, static_cast<size_t>(n));
+  file.Close();
+
+  try {
+    const auto doc = nlohmann::json::parse(content);
+    if (doc.contains("disabled") && doc["disabled"].is_array()) {
+      for (const auto& v : doc["disabled"]) {
+        if (v.is_string()) m_locallyDisabled.insert(v.get<std::string>());
+      }
+    }
+  } catch (const std::exception& e) {
+    kodi::Log(ADDON_LOG_ERROR, "Ignoring unreadable provider selection file: %s", e.what());
+  }
+}
+
+std::set<std::string> ProviderManager::GetLocallyDisabled() const {
+  std::shared_lock<std::shared_mutex> lock(m_dataMutex);
+  return m_locallyDisabled;
+}
+
+bool ProviderManager::SetLocallyDisabled(const std::set<std::string>& disabled) {
+  std::string path;
+  {
+    std::unique_lock<std::shared_mutex> lock(m_dataMutex);
+    m_locallyDisabled = disabled;
+    path = m_selectionPath;
+  }
+  if (path.empty()) return false;
+
+  const nlohmann::json doc = {{"disabled", disabled}};
+  const std::string content = doc.dump(2);
+
+  // Write to a temp file and rename over the target, so a crash/kill mid-write can
+  // never leave a truncated selection file behind.
+  const std::string tmpPath = path + ".tmp";
+  kodi::vfs::CFile file;
+  if (!file.OpenFileForWrite(tmpPath, true)) {
+    kodi::Log(ADDON_LOG_ERROR, "Cannot write provider selection to %s", tmpPath.c_str());
+    return false;
+  }
+  const bool written = file.Write(content.data(), content.size()) == static_cast<ssize_t>(content.size());
+  file.Close();
+  if (!written) {
+    kodi::vfs::DeleteFile(tmpPath);
+    return false;
+  }
+  if (!kodi::vfs::RenameFile(tmpPath, path)) {
+    // Some VFS backends refuse to rename over an existing file: fall back to remove + rename.
+    kodi::vfs::DeleteFile(path);
+    if (!kodi::vfs::RenameFile(tmpPath, path)) {
+      kodi::vfs::DeleteFile(tmpPath);
+      return false;
+    }
+  }
+  return true;
 }

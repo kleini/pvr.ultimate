@@ -7,7 +7,8 @@ struct UltimateProvider {
   std::string label;
   std::string country;
   std::string logo;
-  bool enabled = true;
+  bool enabled = true;         // effective: backendEnabled AND not deselected locally
+  bool backendEnabled = true;  // what the backend offers (never changed by this client)
   int uniqueId = 0;
   // idle | warming | ready | error (only present for enabled providers)
   std::string channelState;
