@@ -26,8 +26,14 @@ jobs:
           - os: ubuntu-22.04
             target: ARM
             kodi-branch: 20.2-Nexus
+          # macOS Apple Silicon (arm64) - native arm64 Kodi only
           - os: macos-latest
             kodi-branch: 20.2-Nexus
+            osx-target: "11.0"
+          # macOS Intel (x86_64) - Intel Kodi or Kodi under Rosetta
+          - os: macos-15-intel
+            kodi-branch: 20.2-Nexus
+            osx-target: "10.15"
           - os: windows-2022
             kodi-branch: 20.2-Nexus
 
@@ -43,6 +49,10 @@ jobs:
             kodi-branch: 21.3-Omega
           - os: macos-latest
             kodi-branch: 21.3-Omega
+            osx-target: "11.0"
+          - os: macos-15-intel
+            kodi-branch: 21.3-Omega
+            osx-target: "10.15"
           - os: windows-2022
             kodi-branch: 21.3-Omega
 
@@ -58,6 +68,10 @@ jobs:
             kodi-branch: 22.0rc1-Piers
           - os: macos-latest
             kodi-branch: 22.0rc1-Piers
+            osx-target: "11.0"
+          - os: macos-15-intel
+            kodi-branch: 22.0rc1-Piers
+            osx-target: "10.15"
           - os: windows-2022
             kodi-branch: 22.0rc1-Piers
 
@@ -162,8 +176,8 @@ jobs:
         with:
           arch: x64
 
-      - name: Configure CMake (Linux/macOS)
-        if: runner.os != 'Windows' && matrix.target != 'ARM'
+      - name: Configure CMake (Linux)
+        if: runner.os == 'Linux' && matrix.target != 'ARM'
         run: |
           cmake \
             -S "${{ github.workspace }}/xbmc/cmake/addons" \
@@ -173,6 +187,24 @@ jobs:
             -DADDONS_DEFINITION_DIR="${{ github.workspace }}/xbmc/cmake/addons/addons" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/kodi-install" \
+            -DPACKAGE_ZIP=ON \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+        shell: bash
+
+      # Native build per runner (arm64 on macos-latest, x86_64 on macos-15-intel).
+      # The deployment target keeps the dylib loadable on older macOS versions.
+      - name: Configure CMake (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cmake \
+            -S "${{ github.workspace }}/xbmc/cmake/addons" \
+            -B "${{ env.app_id }}/build" \
+            -DADDONS_TO_BUILD=${{ env.app_id }} \
+            -DADDON_SRC_PREFIX="${{ github.workspace }}" \
+            -DADDONS_DEFINITION_DIR="${{ github.workspace }}/xbmc/cmake/addons/addons" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/kodi-install" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ matrix.osx-target }} \
             -DPACKAGE_ZIP=ON \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5
         shell: bash
@@ -232,6 +264,36 @@ jobs:
           echo "$MACHINE" | grep -q "$WANT" || { echo "Architecture mismatch"; exit 1; }
           echo "Highest glibc symbol version required:"
           readelf --dyn-syms -W "$LIB" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -n1
+
+      # Verifies architecture + minimum macOS version, then ad-hoc signs the
+      # dylib. Apple Silicon refuses to load unsigned arm64 code, so signing
+      # must happen BEFORE the zip is created.
+      - name: Verify and sign library (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          cd "${{ github.workspace }}/kodi-install/${{ env.app_id }}"
+          LIB=$(grep -o 'library_osx="[^"]*"' addon.xml | cut -d'"' -f2)
+          [ -n "$LIB" ] || { echo "library_osx not found in addon.xml"; cat addon.xml; exit 1; }
+          [ -f "$LIB" ] || { echo "$LIB listed in addon.xml but missing"; ls -la; exit 1; }
+
+          file "$LIB"
+          ARCHS=$(lipo -archs "$LIB")
+          case "${{ runner.arch }}" in
+            ARM64) WANT="arm64" ;;
+            X64)   WANT="x86_64" ;;
+          esac
+          echo "Architectures: $ARCHS (expected: $WANT)"
+          echo "$ARCHS" | grep -qw "$WANT" || { echo "Architecture mismatch"; exit 1; }
+
+          echo "Minimum macOS version:"
+          otool -l "$LIB" | grep -A4 -E 'LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX'
+
+          echo "addon.xml platform / library:"
+          grep -E 'platform|library_osx' addon.xml
+
+          codesign --force --sign - "$LIB"
+          codesign -dv "$LIB"
 
       - name: Package Add-on
         shell: bash
